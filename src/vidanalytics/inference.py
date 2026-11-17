@@ -27,8 +27,15 @@ class YoloDetector:
         from ultralytics import YOLO  # lazy
         self.model = YOLO(weights, task="detect")
         self.model_name = Path(weights).name
-        self.kw = dict(imgsz=imgsz, conf=conf, iou=iou, half=half, device=device,
-                       max_det=max_det, verbose=False)
+        self.kw = dict(imgsz=imgsz, conf=conf, iou=iou, device=device, max_det=max_det, verbose=False)
+        # Precision: TensorRT engines have it baked in, so pass nothing. For .pt weights, Ultralytics
+        # >= 8.4.8x wants `quantize` (16 / 32); `half` is deprecated there and only warns.
+        if Path(weights).suffix != ".engine":
+            from ultralytics.utils import DEFAULT_CFG_DICT
+            if "quantize" in DEFAULT_CFG_DICT:
+                self.kw["quantize"] = 16 if half else 32
+            else:
+                self.kw["half"] = half
         self.pad_to_batch = pad_to_batch
         self.last_speed: list[dict] = []   # per-image ms: preprocess / inference / postprocess
 
