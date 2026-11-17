@@ -64,7 +64,7 @@ Notes: engines are tied to this GPU + TensorRT version (never copy them elsewher
 
 - `No module named 'onnx_graphsurgeon'` / `Ultralytics requirement ['nvidia-modelopt[onnx]>=0.44'] not found ... torch==2.15.0a0+...nv26.10 unsatisfiable`:
   Ultralytics' auto-install tries to re-pin torch to the base image's local NVIDIA build, which no index serves, so nothing gets installed.
-  The Dockerfile now installs the TensorRT-export dependencies itself (`requirements-trt.txt`, `--no-deps`) and sets `YOLO_AUTOINSTALL=False`. Run `make build` once, then `make export-trt`.
+  The Dockerfile now installs the TensorRT-export dependencies itself (`requirements-trt.txt`, with torch pinned by a constraint so it cannot be replaced) and sets `YOLO_AUTOINSTALL=False`. Run `make build` once (look for `trt export deps ok` in the output), then `make export-trt`. If the error persists the container is running an old image: check with `docker compose run --rm yolo python -c "import onnx_graphsurgeon"`.
 - `'half' is deprecated ... Use 'quantize'`: warning only. `export_trt.py` uses `quantize=16` (falls back to `half=True` on older Ultralytics). If you still see it, the container image has an old copy of the scripts (rebuild, or use the live-mount in `compose.yaml`).
 
 ## Phase 2 — multi-chunk batching worker

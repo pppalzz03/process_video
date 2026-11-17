@@ -9,9 +9,13 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt requirements-trt.txt pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.txt
-# --no-deps: never let pip/uv touch the base image's NVIDIA torch (see requirements-trt.txt)
-RUN pip install --no-cache-dir --no-deps -r requirements-trt.txt \
- && python -c "import onnx_graphsurgeon, onnx, onnxruntime; print('trt export deps ok')"
+# TensorRT export deps (onnx_graphsurgeon, modelopt, ...). A constraint pins the installed NVIDIA torch
+# so dependency resolution cannot replace it; the build fails loudly if torch changed anyway.
+RUN TV=$(python -c "import importlib.metadata as m; print(m.version('torch'))") \
+ && echo "torch==${TV}" > /tmp/torch-constraint.txt \
+ && pip install --no-cache-dir -c /tmp/torch-constraint.txt -r requirements-trt.txt \
+ && test "$(python -c "import importlib.metadata as m; print(m.version('torch'))")" = "${TV}" \
+ && python -c "import numpy, onnx, onnxruntime, onnx_graphsurgeon; print('trt export deps ok; numpy', numpy.__version__)"
 COPY src ./src
 COPY scripts ./scripts
 COPY tests ./tests
