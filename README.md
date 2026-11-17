@@ -60,6 +60,13 @@ Output: `results/phase1_<timestamp>.json` + `.md` table. What it measures:
 
 Notes: engines are tied to this GPU + TensorRT version (never copy them elsewhere). Static-batch engines accept exactly their batch size; the worker pads the last partial batch and discards padded results (`--pad-to-batch`). `export_trt.py --dynamic` builds one dynamic engine instead — then verify batch 8 *and* 16 really run. GB10 uses unified memory, so `nvidia-smi` memory may be N/A; the report says "not captured" rather than guessing. Confirm that `yolo26n` is supported by the installed Ultralytics (`make env`).
 
+### Troubleshooting phase 1
+
+- `No module named 'onnx_graphsurgeon'` / `Ultralytics requirement ['nvidia-modelopt[onnx]>=0.44'] not found ... torch==2.15.0a0+...nv26.10 unsatisfiable`:
+  Ultralytics' auto-install tries to re-pin torch to the base image's local NVIDIA build, which no index serves, so nothing gets installed.
+  The Dockerfile now installs the TensorRT-export dependencies itself (`requirements-trt.txt`, `--no-deps`) and sets `YOLO_AUTOINSTALL=False`. Run `make build` once, then `make export-trt`.
+- `'half' is deprecated ... Use 'quantize'`: warning only. `export_trt.py` uses `quantize=16` (falls back to `half=True` on older Ultralytics). If you still see it, the container image has an old copy of the scripts (rebuild, or use the live-mount in `compose.yaml`).
+
 ## Phase 2 — multi-chunk batching worker
 
 ```bash

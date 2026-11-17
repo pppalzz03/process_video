@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 1a: export YOLO26n to TensorRT FP16, one STATIC-batch engine per requested batch size.
+"""Phase 1a: export YOLO26n to TensorRT FP16 (quantize=16; falls back to half=True on older Ultralytics), one STATIC-batch engine per requested batch size.
 
 Engines are tied to this GPU + TensorRT version: never copy them to another machine.
 Use --dynamic to build a single dynamic-batch engine instead (verify batch 8 AND 16 actually run).
@@ -28,14 +28,27 @@ for b, dyn in jobs:
     dst = out / name
     if dst.exists() and not a.force:
         print(f"skip (exists): {dst}"); continue
-    kw = dict(format="engine", half=True, imgsz=a.imgsz, batch=b, dynamic=dyn, device=0)
+    base = dict(format="engine", imgsz=a.imgsz, batch=b, dynamic=dyn, device=0)
     if a.workspace:
-        kw["workspace"] = a.workspace
+        base["workspace"] = a.workspace
     t0 = time.time()
-    try:
-        produced = YOLO(a.weights).export(**kw)
-    except Exception as e:
-        print(f"EXPORT FAILED batch={b}: {e}", file=sys.stderr); continue
+    produced = None
+    # Ultralytics >= 8.4.80 replaced export `half=True` with `quantize=16` (half now warns).
+    # Try the new flag first; fall back to `half` only if this version rejects `quantize`.
+    for prec in ({"quantize": 16}, {"half": True}):
+        kw = {**base, **prec}
+        try:
+            produced = YOLO(a.weights).export(**kw)
+            break
+        except (SyntaxError, TypeError, KeyError) as e:   # unknown-argument errors only
+            if "quantize" in prec and "quantize" in str(e):
+                print(f"'quantize' not supported by this Ultralytics ({e}); retrying with half=True")
+                continue
+            print(f"EXPORT FAILED batch={b}: {e}", file=sys.stderr); break
+        except Exception as e:
+            print(f"EXPORT FAILED batch={b}: {e}", file=sys.stderr); break
+    if produced is None:
+        continue
     shutil.move(str(produced), dst)     # export always writes <weights>.engine; rename per batch
     dst.with_suffix(".engine.json").write_text(json.dumps(
         {"export_args": kw, "build_seconds": round(time.time() - t0, 1), "env": envinfo.collect()}, indent=2))

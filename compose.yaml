@@ -9,3 +9,6 @@ services:
     volumes:
       - ${VIDEO_DIR:-/home/dgx/Downloads}:/videos:ro   # originals are never modified
       - ${OUT_DIR:-/home/dgx/Downloads/yolo-output}:/workspace
+      # live code: edits to src/ and scripts/ take effect without rebuilding the image
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
