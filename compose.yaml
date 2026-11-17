@@ -1,0 +1,11 @@
+# Host paths are overridable:  VIDEO_DIR=/data/videos OUT_DIR=/data/out docker compose run --rm yolo ...
+services:
+  yolo:
+    build: .
+    image: dgx-yolo26-video-analytics:dev
+    gpus: all                  # needs NVIDIA Container Toolkit on the host
+    shm_size: 8g               # starting point, tune after profiling
+    working_dir: /workspace
+    volumes:
+      - ${VIDEO_DIR:-/home/dgx/Downloads}:/videos:ro   # originals are never modified
+      - ${OUT_DIR:-/home/dgx/Downloads/yolo-output}:/workspace

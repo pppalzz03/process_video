@@ -1,0 +1,5 @@
+# Only extras on top of ultralytics/ultralytics:latest-nvidia-arm64.
+# Do NOT list torch / torchvision / opencv / tensorrt here (provided by the base image).
+pytest>=7
+PyYAML>=6
+# Phase 5 (not used yet): qdrant-client

@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+# models / engines / media / run outputs are never committed
+*.pt
+*.onnx
+*.engine
+*.mp4
+*.mkv
+*.avi
+data/
+engines/
+runs/
+yolo-output/
+# keep committed benchmark reports only
+results/*.json
+!results/.gitkeep
