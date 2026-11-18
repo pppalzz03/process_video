@@ -116,9 +116,19 @@ make sweep SWEEP_SEGS=10 SWEEP_WORKERS="4 8"   # Stage B: full pipeline on the p
 
 Each config runs one discarded warm-up run (warms the OS file cache) plus 3 timed runs, each in a fresh process; the report shows the median, min-max, speed-up vs the sequential baseline, average CPU cores used, producer-blocked seconds and peak queue depth. In Stage B every config's events are compared with the sequential run, so a faster setup that changes detections is flagged (`vs reference`). Output: `/workspace/sweep/sweep_<mode>_<time>.md|json`. It prints the **best** config and the **knee** (cheapest config within 95% of best), plus a note when the result is GPU-bound. Keep the machine otherwise idle while it runs. Chunk lengths are keyframe-bound; check keyframe spacing first (see Troubleshooting / `ffprobe -skip_frame nokey`).
 
+### Choosing a sampling rate (how many frames to process)
+
+Use the detections you already have from a full-rate run (`--vid-stride 1`, e.g. the phase 2 run) to estimate how many objects a sparser rate would miss; no new inference needed:
+
+```bash
+make analyze-sampling                 # uses $(P2OUT)/events.jsonl; options: --min-conf 0.4 --target-miss 0.05
+```
+
+Detections are linked into per-object tracklets (greedy IoU, same class); for each candidate stride the expected share of objects with no sampled frame is computed exactly (independent of the sampling phase), per class. The report also shows how long objects stay in view. It prints the sparsest stride within the target miss rate. Limits: objects the detector never found at full rate are not counted; tracklet linking is approximate; results are specific to this camera/footage. State the chosen stride wherever results are reported (it is stored in every event's `sampling` field).
+
 ## Validation done in this repo's authoring environment
 
-- `pytest`: 32 passed on CPU with a synthetic H.264 (B-frame) video — timeline continuity of split chunks vs source PTS (max drift 0.000 s), batch→result mapping across chunk boundaries, partial-batch padding, resume, missing manifest/input/weights/chunk handling.
+- `pytest`: 38 passed on CPU with a synthetic H.264 (B-frame) video — timeline continuity of split chunks vs source PTS (max drift 0.000 s), batch→result mapping across chunk boundaries, partial-batch padding, resume, missing manifest/input/weights/chunk handling.
 - This caught a real issue: ffmpeg's `segment_list` start times are shifted by the B-frame reorder delay (+0.2 s observed), so chunk starts are derived from the source's real PTS instead.
 - **No GPU was available there:** TensorRT export, Ultralytics inference and every FPS number are **not measured** yet.
 

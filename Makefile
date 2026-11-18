@@ -37,3 +37,6 @@ SWEEP_SEGS    ?= 10
 SWEEP_WORKERS ?= 4 8
 sweep-decode: ; $(RUN) python /app/scripts/sweep_phase3.py --video $(VIDEO) --out-dir /workspace/sweep --mode decode-only --segs 60 20 10 5 --workers 1 2 4 8 12 16 --resize both
 sweep:        ; $(RUN) python /app/scripts/sweep_phase3.py --video $(VIDEO) --out-dir /workspace/sweep --mode infer --segs $(SWEEP_SEGS) --workers $(SWEEP_WORKERS) --resize both
+
+# How sparse can sampling be? Needs a full-rate (stride 1) events.jsonl, e.g. the phase 2 run.
+analyze-sampling: ; $(RUN) python /app/scripts/analyze_sampling.py $(P2OUT)/events.jsonl --target-miss 0.05
