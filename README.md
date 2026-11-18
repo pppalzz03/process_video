@@ -6,9 +6,9 @@ Every claim in this repo must come from a measured run; unexecuted numbers are m
 
 | Phase | Goal | Code status | Measured on DGX Spark |
 |---|---|---|---|
-| 1 | YOLO26n TensorRT FP16, batch 8 / 16 | ready | **not measured** |
-| 2 | Python worker: many chunks → cross-chunk batches | ready, unit/integration-tested (CPU, synthetic video) | **not measured** (GPU) |
-| 3 | Parallel FFmpeg decoders + bounded queue | planned | – |
+| 1 | YOLO26n TensorRT FP16, batch 8 / 16 | done | measured (see Results) |
+| 2 | Python worker: many chunks → cross-chunk batches | done | measured (see Results); timestamps validated |
+| 3 | Parallel decoders (threads) + bounded queue | code ready, tested on CPU | **not measured** on DGX |
 | 4 | DeepStream (only if still throughput-bound) | planned | – |
 | 5 | Detection events + timestamps → Qdrant for LLM search | planned (event schema + deterministic IDs already in place) | – |
 
@@ -88,16 +88,61 @@ Event fields: `event_id` (deterministic UUIDv5), `video_id`, `segment_id`, `time
 
 `--vid-stride 1` (every frame) is the correctness baseline; changing the stride changes the amount of work and must not be reported as speed-up.
 
+## Phase 3 — parallel decoders + bounded queue
+
+Phase 2 showed decode is the bottleneck (see Results), so `--decoder threads` runs N decoder threads (one chunk each) feeding a bounded queue that the single inference loop consumes. Threads, not processes: `cv2` releases the GIL while reading/resizing and 2858x1350 BGR frames are ~11.6 MB each, which would be expensive to pickle across processes.
+
+```bash
+make split SEG=10 CHUNK_DIR=/workspace/chunks10        # more/shorter chunks => more parallelism (60 s chunks of a 180 s video = only 3)
+make phase3 CHUNK_DIR=/workspace/chunks10 WORKERS=4 QFRAMES=64
+make compare WORKERS=4                                   # phase 2 events vs phase 3 events (must say OK)
+make phase3-resize CHUNK_DIR=/workspace/chunks10 WORKERS=4   # optional: resize inside the decoder threads
+make compare-resize WORKERS=4
+```
+
+- Frames of one segment stay in order; different segments interleave; results are mapped back by each frame's own tag, so output does not depend on arrival order.
+- `decoder_producer_blocked_seconds` high → producers wait for the GPU (GPU-bound); near 0 → decode-bound (add workers/chunks). `decoder_queue_peak_depth` shows how full the queue got. In threaded mode `decode_seconds` is the time the inference loop *waited* for frames (GPU starved).
+- Queue memory ≈ `queue_frames × frame bytes` (11.6 MB at 2858x1350 → 64 frames ≈ 740 MB).
+- `--decode-resize` replicates Ultralytics' first letterbox step (same size/rounding, `INTER_LINEAR`) in the decoder threads, so the model sees the same pixels, frames shrink ~20x, and boxes are mapped back to original pixels. Detections can differ slightly in box rounding: always run `make compare-resize`.
+- `make compare` / `scripts/compare_events.py` exits 1 if precision or recall vs the reference drops below 0.99. `identical: true` = bit-for-bit equal.
+- Sanity check only (2-core CPU sandbox, synthetic 2858x1350 video, decode-only): 153 FPS sequential → 200 FPS with 4 threads. **Not a DGX Spark number.**
+
+### Choosing the setup: sweep (chunk length x decode workers x resize)
+
+```bash
+make sweep-decode                       # Stage A: decode only, no GPU, ~minutes. Finds the decode ceiling
+make sweep SWEEP_SEGS=10 SWEEP_WORKERS="4 8"   # Stage B: full pipeline on the promising configs only
+```
+
+Each config runs one discarded warm-up run (warms the OS file cache) plus 3 timed runs, each in a fresh process; the report shows the median, min-max, speed-up vs the sequential baseline, average CPU cores used, producer-blocked seconds and peak queue depth. In Stage B every config's events are compared with the sequential run, so a faster setup that changes detections is flagged (`vs reference`). Output: `/workspace/sweep/sweep_<mode>_<time>.md|json`. It prints the **best** config and the **knee** (cheapest config within 95% of best), plus a note when the result is GPU-bound. Keep the machine otherwise idle while it runs. Chunk lengths are keyframe-bound; check keyframe spacing first (see Troubleshooting / `ffprobe -skip_frame nokey`).
+
 ## Validation done in this repo's authoring environment
 
-- `pytest`: 16 passed on CPU with a synthetic H.264 (B-frame) video — timeline continuity of split chunks vs source PTS (max drift 0.000 s), batch→result mapping across chunk boundaries, partial-batch padding, resume, missing manifest/input/weights/chunk handling.
+- `pytest`: 32 passed on CPU with a synthetic H.264 (B-frame) video — timeline continuity of split chunks vs source PTS (max drift 0.000 s), batch→result mapping across chunk boundaries, partial-batch padding, resume, missing manifest/input/weights/chunk handling.
 - This caught a real issue: ffmpeg's `segment_list` start times are shifted by the B-frame reorder delay (+0.2 s observed), so chunk starts are derived from the source's real PTS instead.
 - **No GPU was available there:** TensorRT export, Ultralytics inference and every FPS number are **not measured** yet.
 
-## Results (fill in from `results/*.md`)
+## Results (measured on the DGX Spark, one clip: 2858x1350, H.264, 60 fps, 180.75 s, 10,845 frames; single runs)
 
-| Variant | Batch | e2e FPS | infer ms/img | Agreement P/R |
+Phase 1 — inference only (decode excluded), 256 frames, median of 5 runs, `quantize`/FP16:
+
+| Variant | Batch | e2e FPS | infer ms/img | Agreement P/R vs PyTorch FP32 |
 |---|---|---|---|---|
-| PyTorch FP32 | 8 / 16 | not measured | not measured | reference |
-| TensorRT FP16 | 8 | not measured | not measured | not measured |
-| TensorRT FP16 | 16 | not measured | not measured | not measured |
+| PyTorch FP32 | 8 | 520.56 | 0.891 | reference |
+| PyTorch FP16 | 8 | 683.33 | 0.457 | not computed |
+| TensorRT FP16 | 8 | 582.63 | 0.622 | 0.9272 / 0.9867 |
+| PyTorch FP32 | 16 | 494.82 | 1.020 | reference |
+| PyTorch FP16 | 16 | 690.35 | 0.476 | not computed |
+| TensorRT FP16 | 16 | 554.67 | 0.666 | 0.9286 / 0.9858 |
+
+Finding: TensorRT FP16 was **not faster** than PyTorch FP16 here, and batch 16 gave no gain over 8. Pre/post-processing (~1 ms/img) dominates GPU time (~0.46 ms/img).
+
+Phase 2 — PyTorch FP16, batch 8, 60 s chunks, sequential decode → infer (all 10,845 frames, 0 failed segments):
+
+| decode | infer | write | wall | processed FPS | infer-only FPS | decode FPS |
+|---|---|---|---|---|---|---|
+| 35.78 s | 18.34 s | 0.33 s | 54.48 s | 199.1 | 591.3 | 303.1 |
+
+Finding: decode is ~66% of wall time and slower than the GPU → phase 3. (`processed FPS` = frames inferred ÷ wall seconds; source is 60 fps, so ≈3.3x real time.)
+
+Phase 3 — **not measured** yet.

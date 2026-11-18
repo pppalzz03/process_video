@@ -4,9 +4,18 @@ from __future__ import annotations
 import time
 from typing import Iterable
 
-from .events import make_event, SegmentEventSink
+from .events import Detection, make_event, SegmentEventSink
 from .frames import Frame, SegmentEnd
 from .inference import Detector
+
+
+def _rescale(dets: list[Detection], scale: tuple[float, float]) -> list[Detection]:
+    sx, sy = scale
+    if sx == 1.0 and sy == 1.0:
+        return dets
+    return [Detection(d.class_id, d.class_name, d.confidence,
+                      (d.bbox_xyxy[0] * sx, d.bbox_xyxy[1] * sy, d.bbox_xyxy[2] * sx, d.bbox_xyxy[3] * sy))
+            for d in dets]
 
 
 def run_pipeline(source: Iterable[Frame | SegmentEnd], detector: Detector | None, batch_size: int,
@@ -33,6 +42,7 @@ def run_pipeline(source: Iterable[Frame | SegmentEnd], detector: Detector | None
             dets = [[] for _ in pending]
         t0 = time.perf_counter()
         for f, d in zip(pending, dets):          # results mapped back via the frame's own tag
+            d = _rescale(d, f.bbox_scale)
             sink.write_frame(f.tag, [make_event(f.tag, x, i, model_name, sampling) for i, x in enumerate(d)])
         sink.flush()
         t_write += time.perf_counter() - t0
@@ -59,8 +69,10 @@ def run_pipeline(source: Iterable[Frame | SegmentEnd], detector: Detector | None
             flush()
     flush()
     wall = time.perf_counter() - wall0
-    return {
+    extra = source.stats() if hasattr(source, "stats") else {}
+    return {**extra,
         "frames_processed": frames, "batches": batches,
+        # decode_seconds = time the main loop WAITED for frames (in threaded mode: GPU-starved time)
         "avg_batch_size": round(frames / batches, 3) if batches else 0,
         "wall_seconds": round(wall, 4), "decode_seconds": round(t_decode, 4),
         "infer_seconds": round(t_infer, 4), "write_seconds": round(t_write, 4),

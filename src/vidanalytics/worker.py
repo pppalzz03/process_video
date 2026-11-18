@@ -7,12 +7,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import resource
 import sys
 import time
 from pathlib import Path
 
 from . import PIPELINE_VERSION, envinfo
 from .decoder import decode_chunks
+from .parallel_decoder import ParallelDecoder
 from .events import SegmentEventSink, merge_events
 from .manifest import Chunk, chunks_from_files, read_manifest
 from .pipeline import run_pipeline
@@ -35,6 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--decode-only", action="store_true", help="no inference: measure decode throughput")
     p.add_argument("--no-resume", action="store_true", help="re-process segments that already finished")
     p.add_argument("--max-frames", type=int, default=None, help="debug limit; segments cut short still count as done, so use a fresh --out")
+    p.add_argument("--decoder", choices=["sequential", "threads"], default="sequential",
+                   help="sequential = phase 2; threads = phase 3 (N decoder threads + bounded queue)")
+    p.add_argument("--decode-workers", type=int, default=4,
+                   help="threads mode; capped at the number of chunks, so split into more/shorter chunks")
+    p.add_argument("--queue-frames", type=int, default=64, help="threads mode: bounded queue size in frames "
+                   "(memory = queue_frames x frame bytes, ~11.6 MB each at 2858x1350 unless --decode-resize)")
+    p.add_argument("--decode-resize", action="store_true",
+                   help="resize to the model's letterbox size inside the decoder threads (same pixels the "
+                        "model would see; boxes are mapped back to original resolution)")
     p.add_argument("--out", required=True)
     return p
 
@@ -72,14 +83,26 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     sampling = {"vid_stride": a.vid_stride, "imgsz": a.imgsz, "conf": a.conf, "batch": a.batch}
+    rs = a.imgsz if a.decode_resize else None
+    if a.decoder == "threads":
+        source = ParallelDecoder(todo, a.vid_stride, a.decode_workers, a.queue_frames, a.max_frames, rs)
+    else:
+        source = decode_chunks(todo, a.vid_stride, a.max_frames, rs)
     t0 = time.time()
-    stats = run_pipeline(decode_chunks(todo, a.vid_stride, a.max_frames), detector, a.batch, sink, sampling)
+    ru0 = resource.getrusage(resource.RUSAGE_SELF)
+    stats = run_pipeline(source, detector, a.batch, sink, sampling)
+    ru1 = resource.getrusage(resource.RUSAGE_SELF)
+    cpu = (ru1.ru_utime - ru0.ru_utime) + (ru1.ru_stime - ru0.ru_stime)   # all threads of this process
+    stats["cpu_seconds"] = round(cpu, 3)
+    stats["avg_cores_used"] = round(cpu / stats["wall_seconds"], 2) if stats["wall_seconds"] else None
     sink.close()
     merge_events(out, [c.segment_id for c in chunks])
 
     summary = {
         "pipeline_version": PIPELINE_VERSION, "mode": "decode-only" if a.decode_only else "infer",
-        "weights": a.weights, "config": sampling, "pad_to_batch": a.pad_to_batch,
+        "weights": a.weights, "config": sampling,
+        "decoder": {"mode": a.decoder, "workers": a.decode_workers, "queue_frames": a.queue_frames,
+                    "resize_in_decoder": bool(rs)}, "pad_to_batch": a.pad_to_batch,
         "segments_total": len(chunks), "segments_completed": sink.completed,
         "segments_skipped_resume": skipped, "segments_failed": sink.failed,
         "started_unix": t0, "stats": stats, "env": envinfo.collect(),

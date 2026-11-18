@@ -18,6 +18,9 @@ class FrameTag:
 class Frame:
     tag: FrameTag
     image: Any                  # BGR ndarray (H, W, 3)
+    # (sx, sy): multiply detected bbox x / y by these to get ORIGINAL-resolution pixels.
+    # (1, 1) unless the decoder pre-resized the image (resize-in-decoder option).
+    bbox_scale: tuple[float, float] = (1.0, 1.0)
 
 
 @dataclass(frozen=True)
